@@ -1,0 +1,8 @@
+streamlit>=1.28.0
+google-genai
+google-cloud-aiplatform>=1.70.0
+plotly>=5.18.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+playwright
+kiwipiepy>=0.17.0

@@ -1,0 +1,277 @@
+/**
+ * app.py 디자인용 CSS 추출본 (디버깅·검토용)
+ * - main() 첫 st.markdown(<style>...) 안의 규칙
+ * - inject_dashboard_styles() 의 .gs-* 규칙
+ *
+ * Streamlit 테마(.streamlit/config.toml):
+ *   backgroundColor = #F8FAFC
+ *   secondaryBackgroundColor = #FFFFFF
+ *
+ * 투명처럼 보일 때 확인:
+ * 1) 개발자도구로 "입력 및 실행" 테두리 DOM에 data-testid="stVerticalBlockBorderWrapper" 존재 여부
+ * 2) 부모가 [data-testid="stMain"] 인지, 아니면 div.main 인지 → 아래에 [data-testid="stMain"] / .main 병기됨
+ */
+
+/* ========== main() 글로벌 스타일 블록 ========== */
+
+/* 추천 팔레트: 페이지 #F8FAFC · 카드 #FFFFFF · 타이틀 #0F172A · 서브 #64748B · 보더 #E2E8F0 · 주버튼 #2563EB */
+.stApp, [data-testid="stAppViewContainer"] {
+  background-color: #F8FAFC !important;
+}
+header[data-testid="stHeader"] {
+  background: transparent;
+}
+
+/* 왼쪽 설정 사이드바 — 다크 네이비·슬레이트 */
+section[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, #18253A 0%, #0F1A2B 55%, #0F1A2B 100%) !important;
+}
+section[data-testid="stSidebar"] > div {
+  background: transparent !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"] {
+  background-color: #283447 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 14px !important;
+}
+/* ... 사이드바 라벨/입력/캡션 등은 app.py 원문 참고 ... */
+
+/* 메인 본문 bordered 컨테이너 */
+[data-testid="stMain"] div[data-testid="stVerticalBlockBorderWrapper"],
+section.main div[data-testid="stVerticalBlockBorderWrapper"],
+.main div[data-testid="stVerticalBlockBorderWrapper"] {
+  background-color: #FFFFFF !important;
+  background-image: none !important;
+  border: 1px solid #E2E8F0 !important;
+  border-radius: 14px !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05) !important;
+}
+[data-testid="stMain"] div[data-testid="stVerticalBlockBorderWrapper"] > div,
+section.main div[data-testid="stVerticalBlockBorderWrapper"] > div,
+.main div[data-testid="stVerticalBlockBorderWrapper"] > div {
+  background-color: #FFFFFF !important;
+}
+[data-testid="stMain"] div[data-testid="stVerticalBlockBorderWrapper"] .block-container,
+section.main div[data-testid="stVerticalBlockBorderWrapper"] .block-container,
+.main div[data-testid="stVerticalBlockBorderWrapper"] .block-container {
+  background-color: #FFFFFF !important;
+}
+[data-testid="stMain"] div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"],
+section.main div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"],
+.main div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"] {
+  background-color: #FFFFFF !important;
+}
+[data-testid="stMain"] div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="column"],
+section.main div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="column"],
+.main div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="column"] {
+  align-self: stretch !important;
+}
+
+/* 상품 URL·리뷰 붙여넣기 */
+[data-testid="stMain"] .stTextInput [data-baseweb="input"] input,
+[data-testid="stMain"] .stTextInput input,
+[data-testid="stMain"] .stTextArea textarea,
+section.main .stTextInput [data-baseweb="input"] input,
+section.main .stTextInput input,
+section.main .stTextArea textarea,
+.main .stTextInput [data-baseweb="input"] input,
+.main .stTextInput input,
+.main .stTextArea textarea {
+  border: 1px solid #CBD5E1 !important;
+  border-radius: 10px !important;
+}
+
+.stButton > button[kind="primary"],
+button[kind="primary"] {
+  background-color: #2563EB !important;
+  border-color: #2563EB !important;
+  color: #FFFFFF !important;
+}
+.stButton > button[kind="primary"]:hover,
+button[kind="primary"]:hover {
+  background-color: #1d4ed8 !important;
+  border-color: #1d4ed8 !important;
+  color: #FFFFFF !important;
+}
+
+.insight-hero {
+  border: 1px solid #E2E8F0;
+  border-radius: 14px;
+  padding: 1.35rem 1.5rem 1.15rem 1.5rem;
+  margin-bottom: 1.25rem;
+  background: #FFFFFF;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+.insight-hero .hero-title {
+  font-size: 1.65rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #0F172A;
+  margin: 0 0 0.45rem 0;
+  line-height: 1.28;
+}
+.insight-hero .hero-sub {
+  font-size: 0.98rem;
+  color: #64748B;
+  margin: 0;
+  line-height: 1.55;
+}
+.insight-card-title {
+  font-size: 1.08rem;
+  font-weight: 600;
+  color: #0F172A;
+  margin: 0 0 0.85rem 0;
+  letter-spacing: -0.01em;
+}
+.insight-muted {
+  font-size: 0.88rem;
+  color: #64748B;
+  margin-top: 0.35rem;
+}
+
+/* ========== inject_dashboard_styles() — .gs-* ========== */
+
+.gs-section-card{
+    background:#ffffff;
+    border:1px solid #E2E8F0;
+    border-radius:18px;
+    padding:22px 22px 18px 22px;
+    box-shadow:0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.gs-section-title{
+    margin:0 0 16px 0;
+    font-size:1.8rem;
+    line-height:1.2;
+    font-weight:800;
+    letter-spacing:-0.02em;
+    color:#0F172A;
+}
+.gs-section-sub{
+    margin:0 0 14px 0;
+    font-size:0.92rem;
+    color:#64748B;
+}
+.gs-chip-wrap{ display:flex; flex-wrap:wrap; gap:10px 10px; }
+.gs-chip{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    padding:10px 14px;
+    border-radius:999px;
+    background:linear-gradient(180deg, #F8FBFF 0%, #EEF4FF 100%);
+    border:1px solid #D6E4FF;
+    color:#1D4ED8;
+    font-size:0.95rem;
+    font-weight:600;
+    line-height:1.25;
+    white-space:nowrap;
+    min-height:2.75rem;
+    box-sizing:border-box;
+}
+.gs-chip-no{
+    width:22px;
+    height:22px;
+    border-radius:999px;
+    background:#DBEAFE;
+    color:#1D4ED8;
+    font-size:0.78rem;
+    font-weight:700;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    flex-shrink:0;
+}
+.gs-section-card.gs-keyword-card{
+    margin-bottom:16px;
+    padding-bottom:34px;
+}
+.gs-debug-spacer{ height:12px; }
+.gs-copy-grid{
+    display:grid;
+    grid-template-columns:repeat(2, minmax(0, 1fr));
+    gap:16px;
+    align-items:stretch;
+}
+@media (max-width: 900px){
+    .gs-copy-grid{ grid-template-columns:1fr; }
+}
+.gs-copy-card{
+    background:#ffffff;
+    border:1px solid #E2E8F0;
+    border-radius:18px;
+    padding:20px 22px 24px 22px;
+    box-shadow:0 1px 2px rgba(15, 23, 42, 0.04);
+    box-sizing:border-box;
+    min-height:240px;
+    height:100%;
+    display:flex;
+    flex-direction:column;
+}
+.gs-copy-top{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-bottom:17px;
+    flex-shrink:0;
+}
+.gs-copy-index{
+    width:28px;
+    height:28px;
+    border-radius:999px;
+    background:#2563EB;
+    color:#ffffff;
+    font-size:0.84rem;
+    font-weight:700;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    flex-shrink:0;
+}
+.gs-copy-title{
+    font-size:1.09rem;
+    font-weight:900;
+    color:#0F172A;
+    line-height:1.22;
+    letter-spacing:-0.02em;
+    flex:1;
+    min-width:0;
+}
+.gs-copy-body{
+    font-size:0.97rem;
+    font-weight:500;
+    color:#1E293B;
+    line-height:1.475;
+    word-break:keep-all;
+    padding:0 3px;
+    flex:1 1 auto;
+    min-height:0;
+}
+.gs-copy-body .gs-copy-line{ margin:0 0 0.34em 0; }
+.gs-copy-body .gs-copy-line:last-child{ margin-bottom:0; }
+.gs-copy-cta-wrap{
+    margin-top:auto;
+    flex-shrink:0;
+    padding-top:2px;
+}
+.gs-copy-divider{
+    height:1px;
+    background:rgba(226, 232, 240, 0.65);
+    margin:0 0 12px 0;
+}
+.gs-copy-cta-label{
+    margin:0 0 5px 0;
+    font-size:0.62rem;
+    font-weight:600;
+    color:#B8C0CC;
+    letter-spacing:0.06em;
+    text-transform:uppercase;
+}
+.gs-copy-cta{
+    margin:0;
+    font-size:0.96rem;
+    font-weight:800;
+    color:#0F172A;
+    line-height:1.55;
+    word-break:keep-all;
+}
