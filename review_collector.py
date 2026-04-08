@@ -13,7 +13,9 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import subprocess
 import sys
+import threading
 import time
 import traceback
 from dataclasses import dataclass
@@ -36,6 +38,56 @@ CHROME_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/123.0.0.0 Safari/537.36"
 )
+
+_playwright_browser_lock = threading.Lock()
+_playwright_browsers_ready = False
+
+
+def _ensure_playwright_browsers() -> None:
+    """
+    pip로 playwright만 설치되고 Chromium 바이너리가 없는 환경(Streamlit Community Cloud 등) 대비.
+    최초 1회 `python -m playwright install chromium` 로 캐시에 받은 뒤 재시도한다.
+    """
+    global _playwright_browsers_ready
+    if _playwright_browsers_ready:
+        return
+
+    def _launch_ok() -> bool:
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                browser.close()
+            return True
+        except Exception as e:
+            msg = str(e).lower()
+            if "executable doesn't exist" in msg or "looks like playwright was just installed" in msg:
+                return False
+            raise
+
+    with _playwright_browser_lock:
+        if _playwright_browsers_ready:
+            return
+        if _launch_ok():
+            _playwright_browsers_ready = True
+            return
+        proc = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "playwright install chromium 실패: "
+                + (proc.stderr or proc.stdout or str(proc.returncode))
+            )
+        if not _launch_ok():
+            raise RuntimeError(
+                "Chromium 설치 후에도 실행에 실패했습니다. "
+                "Streamlit Cloud는 저장소 루트의 packages.txt(시스템 라이브러리)와 "
+                "앱 설정의 빌드 명령에 `python -m playwright install chromium` 포함을 확인하세요."
+            )
+        _playwright_browsers_ready = True
 
 
 @dataclass
@@ -1857,6 +1909,10 @@ def collect_reviews(
     failure_detail = ""
 
     if shopping_url and shopping_url.lower().startswith(("http://", "https://")):
+        try:
+            _ensure_playwright_browsers()
+        except Exception as e:
+            return [], f"Playwright Chromium 준비 실패: {_exc_detail(e)}"
         parsed0 = urlparse(shopping_url)
         host0 = (parsed0.netloc or "").lower()
         # 네이버 브랜드/스마트스토어는 전용 Playwright 경로(리뷰 탭·페이지네이션) 우선
