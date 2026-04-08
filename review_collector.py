@@ -1374,6 +1374,27 @@ def _naver_deep_scroll_review_section(page: Any) -> None:
     page.wait_for_timeout(900)
 
 
+def _playwright_goto_relaxed(
+    page: Any,
+    url: str,
+    *,
+    timeout_ms: int = 90000,
+    soft_load_wait_ms: int = 28000,
+) -> Any:
+    """
+    wait_until='load' 단독 사용 시, 광고·추적 스크립트 때문에 load 이벤트가 늦거나
+    사실상 오지 않아 Page.goto가 장시간 타임아웃나는 경우가 있다.
+    domcontentloaded까지 확보한 뒤, 가능하면 load만 짧게 추가 대기한다.
+    """
+    resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+    page.wait_for_timeout(400)
+    try:
+        page.wait_for_load_state("load", timeout=soft_load_wait_ms)
+    except Exception:
+        pass
+    return resp
+
+
 def _playwright_collect_naver_store(
     shopping_url: str,
     *,
@@ -1404,7 +1425,7 @@ def _playwright_collect_naver_store(
                 "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
             )
             page = context.new_page()
-            page.goto(shopping_url, wait_until="load", timeout=120000)
+            _playwright_goto_relaxed(page, shopping_url, timeout_ms=120000)
             page.wait_for_timeout(5000)
             page.wait_for_timeout(3000)
 
@@ -1509,7 +1530,7 @@ def _playwright_collect_oliveyoung(
                 "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
             )
             page = context.new_page()
-            resp = page.goto(url, wait_until="load", timeout=120000)
+            resp = _playwright_goto_relaxed(page, url, timeout_ms=120000)
             if resp is not None and resp.status >= 400:
                 note = (
                     f"올리브영 HTTP {resp.status} (자동 수집이 거부됐을 수 있습니다). "
@@ -1811,10 +1832,10 @@ def _playwright_collect_toun28(
                 "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
             )
             page = context.new_page()
-            page.goto(shopping_url, wait_until="load", timeout=120000)
+            _playwright_goto_relaxed(page, shopping_url, timeout_ms=120000)
             page.wait_for_timeout(2000)
             try:
-                page.wait_for_load_state("networkidle", timeout=25000)
+                page.wait_for_load_state("networkidle", timeout=20000)
             except Exception:
                 pass
             page.wait_for_timeout(1200)
