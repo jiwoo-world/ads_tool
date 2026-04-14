@@ -454,6 +454,131 @@ def _review_items_from_oliveyoung_texts(texts: List[str]) -> List[ReviewItem]:
     return out
 
 
+def _text_looks_like_embedded_css(t: str) -> bool:
+    """스타일 블록·Yotpo 위젯 CSS가 리뷰 후보로 섞이는 경우."""
+    t = (t or "").strip()
+    if not t:
+        return True
+    if "{" in t and "}" in t and ":" in t:
+        if t.count("{") >= 1 and any(
+            x in t for x in ("display:", "cursor:", "@keyframes", "!important", "animation:")
+        ):
+            return True
+        if ".yotpo" in t or "[v-cloak]" in t:
+            return True
+    if ".yotpo-" in t and ("{" in t or "display" in t):
+        return True
+    return False
+
+
+def _text_is_yotpo_shopify_ui_noise(t: str) -> bool:
+    """Yotpo/Shopify 리뷰 위젯 UI·요약·필터 문구 (본문 아님)."""
+    low = (t or "").strip().lower()
+    if len(low) < 6:
+        return True
+    exact = {
+        "verified buyer",
+        "write a review",
+        "review highlights",
+        "read summary",
+        "read summary by topics",
+        "search reviews",
+        "sort by",
+        "with media",
+        "all ratings",
+        "show more",
+        "most relevant",
+        "most recent",
+        "highest rating",
+        "lowest rating",
+        "previous review media slide",
+        "next review media slide",
+    }
+    if low in exact:
+        return True
+    if re.match(r"^\d+\s+reviews?$", low):
+        return True
+    if re.match(r"^review\s+[\d.]+\s+based on\s+\d+", low):
+        return True
+    if "customers say" in low and "ai-generated" in low:
+        return True
+    if "abstract user icon" in low:
+        return True
+    if "was this review helpful" in low and len(low) < 80:
+        return True
+    if "published date" in low and len(low) < 120:
+        return True
+    # Shopify AI 한 줄 요약 블록
+    if "offers a unique" in low and "customers praise" in low and len(low) > 200:
+        return True
+    return False
+
+
+def _element_is_yotpo_chrome_not_body(el: Any) -> bool:
+    """클래스에 review가 들어가도 위젯 껍데기인 요소는 제외."""
+    cls = (" ".join(el.get("class", []) or []) + " " + (el.get("id") or "")).lower()
+    if "yotpo" not in cls:
+        return False
+    if any(
+        x in cls
+        for x in (
+            "yotpo-review-body",
+            "yotpo-read-more",
+            "yotpo-comment",
+            "content-review",
+        )
+    ):
+        return False
+    if any(
+        x in cls
+        for x in (
+            "yotpo-star",
+            "yotpo-sr-",
+            "yotpo-bottom",
+            "yotpo-widget",
+            "yotpo-highly",
+            "yotpo-topic",
+            "yotpo-reviews-star-ratings",
+            "yotpo-scroll",
+            "yotpo-filter",
+            "yotpo-header",
+            "yotpo-summary",
+        )
+    ):
+        return True
+    return False
+
+
+def _extract_yotpo_review_bodies(soup: BeautifulSoup) -> List[ReviewItem]:
+    """Yotpo(Shopify 등): 본문 노드만 수집. 위젯 전체 텍스트는 쓰지 않음."""
+    selectors = [
+        ".yotpo-review-body",
+        ".yotpo-read-more",
+        "[class*='yotpo-review-body']",
+        ".yotpo-comment-content",
+        ".content-review",
+    ]
+    seen: set[str] = set()
+    out: List[ReviewItem] = []
+    for sel in selectors:
+        for el in soup.select(sel):
+            txt = el.get_text(" ", strip=True)
+            txt = re.sub(r"\s+", " ", txt)
+            txt = re.sub(r"\s*Read more\s*$", "", txt, flags=re.IGNORECASE).strip()
+            if len(txt) < 28:
+                continue
+            if _text_looks_like_embedded_css(txt):
+                continue
+            if _text_is_yotpo_shopify_ui_noise(txt):
+                continue
+            key = txt[:240]
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(ReviewItem(text=txt[:2000]))
+    return out
+
+
 def _extract_reviews_from_soup(soup: BeautifulSoup, base_url: str | None = None) -> List[ReviewItem]:
     """
     리뷰를 최대한 많이 뽑기 위한 파서.
@@ -462,9 +587,21 @@ def _extract_reviews_from_soup(soup: BeautifulSoup, base_url: str | None = None)
     2) (보조) 클래스에 review 관련 단어가 포함된 요소에서 텍스트 추출
     """
 
+    # 스크립트/스타일 안의 CSS·JS가 'review' 클래스 부모에 섞여 나오는 경우 방지
+    for tag in soup.find_all(["script", "style", "noscript"]):
+        tag.decompose()
+
     out: List[ReviewItem] = []
 
     host = (urlparse(base_url).netloc.lower() if base_url else "").strip()
+
+    # Yotpo(lewkin 등 Shopify): 전용 선택자 우선 — 폴백은 위젯·CSS 노이즈가 많음
+    if soup.select_one(
+        "[class*='yotpo-review'], [class*='yotpo-review-body'], [id*='yotpo']"
+    ):
+        yb = _extract_yotpo_review_bodies(soup)
+        if yb:
+            return yb
 
     def _toun28_extract() -> List[ReviewItem]:
         # toun28은 리뷰 카드가 `.box-review` / `.review` 계열로 렌더되는 경우가 많습니다.
@@ -641,9 +778,15 @@ def _extract_reviews_from_soup(soup: BeautifulSoup, base_url: str | None = None)
     )
 
     for el in candidates:
+        if _element_is_yotpo_chrome_not_body(el):
+            continue
         # 별점/메타가 섞여 있을 수 있으니, 큰 덩어리 텍스트를 짧게 사용
         txt = el.get_text(" ", strip=True)
         if not txt:
+            continue
+        if _text_looks_like_embedded_css(txt):
+            continue
+        if _text_is_yotpo_shopify_ui_noise(txt):
             continue
         # 너무 짧거나(노이즈), 리뷰라는 단서가 없으면 건너뜀
         if len(txt) < 10:
@@ -665,6 +808,13 @@ def _extract_reviews_from_soup(soup: BeautifulSoup, base_url: str | None = None)
             continue
         # 중복 방지용으로 너무 긴 문장을 잘라서 저장 (분석 품질은 모델이 처리)
         out.append(ReviewItem(text=txt[:1200]))
+
+    out = [
+        it
+        for it in out
+        if not _text_looks_like_embedded_css(it.text or "")
+        and not _text_is_yotpo_shopify_ui_noise(it.text or "")
+    ]
 
     if "oliveyoung.co.kr" in host:
         out = [it for it in out if not _oliveyoung_is_ui_not_review_body(it.text or "")]
