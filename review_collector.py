@@ -478,6 +478,7 @@ def _text_is_yotpo_shopify_ui_noise(t: str) -> bool:
         return True
     exact = {
         "verified buyer",
+        "verified reviewer",
         "write a review",
         "review highlights",
         "read summary",
@@ -495,6 +496,14 @@ def _text_is_yotpo_shopify_ui_noise(t: str) -> bool:
         "next review media slide",
     }
     if low in exact:
+        return True
+    # 캐러셀·접근성 문구
+    if "left arrow" in low and "right arrow" in low:
+        return True
+    if "sort by" in low and low.count("sort by") >= 2:
+        return True
+    # REVIEW HIGHLIGHTS 롤링 영역에서 붙은 긴 덩어리
+    if "review highlights" in low and len(low) > 50:
         return True
     if re.match(r"^\d+\s+reviews?$", low):
         return True
@@ -562,8 +571,34 @@ def _strip_yotpo_brand_footer(t: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def _strip_yotpo_highlights_prefix(t: str) -> str:
+    """상단 REVIEW HIGHLIGHTS 캐러셀에서 붙는 접두어 제거."""
+    s = (t or "").strip()
+    s = re.sub(r"^\s*review\s*highlights\s+", "", s, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _dedupe_substring_reviews(items: List[ReviewItem]) -> List[ReviewItem]:
+    """짧은 조각이 긴 리뷰에 완전 포함되면 제거(하이라이트·분절 중복 완화)."""
+    texts = sorted(
+        {(it.text or "").strip() for it in items if (it.text or "").strip()},
+        key=len,
+        reverse=True,
+    )
+    kept: list[str] = []
+    seen: set[str] = set()
+    for t in texts:
+        if t in seen:
+            continue
+        if any(t != k and t in k for k in kept):
+            continue
+        seen.add(t)
+        kept.append(t)
+    return [ReviewItem(text=x[:2000]) for x in kept]
+
+
 def _yotpo_text_to_review_item(txt: str, *, seen: set[str]) -> ReviewItem | None:
-    txt = _strip_yotpo_brand_footer(re.sub(r"\s+", " ", (txt or "").strip()))
+    txt = _strip_yotpo_highlights_prefix(_strip_yotpo_brand_footer(re.sub(r"\s+", " ", (txt or "").strip())))
     txt = re.sub(r"\s*Read more\s*$", "", txt, flags=re.IGNORECASE).strip()
     if len(txt) < 12:
         return None
@@ -578,8 +613,8 @@ def _yotpo_text_to_review_item(txt: str, *, seen: set[str]) -> ReviewItem | None
 
 def _playwright_yotpo_extract_review_items_from_dom(page: Any) -> List[ReviewItem]:
     """
-    렌더된 DOM에서 Yotpo 카드 단위로 수집(BeautifulSoup보다 동적 노드에 유리).
-    제목(.yotpo-review-title) + 본문(.yotpo-review-body)을 한 리뷰로 합침.
+    렌더된 DOM에서 Yotpo 카드 수집. REVIEW HIGHLIGHTS·캐러셀 내부 카드는 제외하고
+    본 리뷰 리스트(.yotpo-reviews-list 등) 안의 .yotpo-review만 사용.
     """
     try:
         raw = page.evaluate(
@@ -593,7 +628,20 @@ def _playwright_yotpo_extract_review_items_from_dom(page: Any) -> List[ReviewIte
                 seen.add(t);
                 out.push(t);
               }
-              document.querySelectorAll('.yotpo-review').forEach((card) => {
+              function inHighlightOrCarousel(el) {
+                let p = el;
+                for (let i = 0; i < 18 && p; i++) {
+                  const c = (p.className && String(p.className).toLowerCase()) || '';
+                  const id = (p.id || '').toLowerCase();
+                  const blob = c + ' ' + id;
+                  if (/yotpo-highlight|review-highlights|yotpo-highlights|yotpo-slideshow|yotpo-carousel|yotpo-slider|highly-rated-topics/.test(blob))
+                    return true;
+                  p = p.parentElement;
+                }
+                return false;
+              }
+              function pushCard(card) {
+                if (inHighlightOrCarousel(card)) return;
                 const titleEl = card.querySelector(
                   '.yotpo-review-title, [class*="yotpo-review-title"], .content-title'
                 );
@@ -604,10 +652,28 @@ def _playwright_yotpo_extract_review_items_from_dom(page: Any) -> List[ReviewIte
                 const body = bodyEl ? (bodyEl.innerText || '').trim() : '';
                 const combined = [title, body].filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim();
                 if (combined.length >= 12) pushText(combined);
-              });
-              document.querySelectorAll('.yotpo-review-body').forEach((el) => {
-                pushText((el.innerText || '').trim());
-              });
+              }
+              const listRoots = [
+                '.yotpo-reviews-list',
+                '[class*="yotpo-reviews-list"]',
+                '#yotpo-reviews-container',
+                '[class*="yotpo-reviews-main"]',
+              ];
+              let usedMainList = false;
+              for (const sel of listRoots) {
+                try {
+                  const nodes = document.querySelectorAll(sel + ' .yotpo-review');
+                  if (nodes.length) {
+                    usedMainList = true;
+                    nodes.forEach((card) => pushCard(card));
+                  }
+                } catch (e) {}
+              }
+              if (!usedMainList) {
+                document.querySelectorAll('.yotpo-review').forEach((card) => {
+                  if (!inHighlightOrCarousel(card)) pushCard(card);
+                });
+              }
               return out.slice(0, 400);
             }
             """
@@ -705,8 +771,27 @@ def _playwright_yotpo_click_next_page(page: Any) -> bool:
 
 
 def _extract_yotpo_review_bodies(soup: BeautifulSoup) -> List[ReviewItem]:
-    """Yotpo(Shopify 등): 본문 노드만 수집. 위젯 전체 텍스트는 쓰지 않음."""
-    selectors = [
+    """Yotpo: REVIEW HIGHLIGHTS 캐러셀·슬라이더는 제거하고, 본 리뷰 리스트(Reviews list) 위주로 본문만 수집."""
+    for junk in soup.select(
+        '[class*="yotpo-highlight"], [class*="yotpo-highlights"], [class*="review-highlights"], '
+        '[class*="yotpo-slideshow"], [class*="yotpo-carousel"], '
+        ".yotpo-highly-rated-topics-content, [class*='yotpo-highly-rated']"
+    ):
+        try:
+            junk.decompose()
+        except Exception:
+            pass
+
+    list_scoped = [
+        ".yotpo-reviews-list .yotpo-review-body",
+        ".yotpo-reviews-list .yotpo-read-more",
+        ".yotpo-reviews-list [class*='yotpo-review-body']",
+        "[class*='yotpo-reviews-list'] .yotpo-review-body",
+        "[class*='yotpo-reviews-list'] .yotpo-read-more",
+        "#yotpo-reviews-container .yotpo-review-body",
+        "#yotpo-reviews-container .yotpo-read-more",
+    ]
+    fallback = [
         ".yotpo-review-body",
         ".yotpo-read-more",
         "[class*='yotpo-review-body']",
@@ -715,23 +800,19 @@ def _extract_yotpo_review_bodies(soup: BeautifulSoup) -> List[ReviewItem]:
     ]
     seen: set[str] = set()
     out: List[ReviewItem] = []
-    for sel in selectors:
-        for el in soup.select(sel):
-            txt = el.get_text(" ", strip=True)
-            txt = re.sub(r"\s+", " ", txt)
-            txt = re.sub(r"\s*Read more\s*$", "", txt, flags=re.IGNORECASE).strip()
-            txt = _strip_yotpo_brand_footer(txt)
-            if len(txt) < 18:
-                continue
-            if _text_looks_like_embedded_css(txt):
-                continue
-            if _text_is_yotpo_shopify_ui_noise(txt):
-                continue
-            key = txt[:240]
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(ReviewItem(text=txt[:2000]))
+
+    def collect(selectors: list[str]) -> None:
+        for sel in selectors:
+            for el in soup.select(sel):
+                txt = el.get_text(" ", strip=True)
+                txt = re.sub(r"\s+", " ", txt)
+                it = _yotpo_text_to_review_item(txt, seen=seen)
+                if it is not None:
+                    out.append(it)
+
+    collect(list_scoped)
+    if not out:
+        collect(fallback)
     return out
 
 
@@ -2305,7 +2386,7 @@ def _playwright_collect_yotpo_shopify(
             except Exception:
                 pass
 
-    all_items = _dedupe_reviews(all_items)[:max_reviews]
+    all_items = _dedupe_substring_reviews(_dedupe_reviews(all_items))[:max_reviews]
     note = (
         f"Yotpo/Shopify: 탭·스크롤 후 수집, Load more {load_clicks}회·다음페이지 {next_clicks}회, "
         f"총 {len(all_items)}건 (상한 {max_reviews}건)"
