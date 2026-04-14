@@ -752,14 +752,42 @@ def _playwright_click_shopify_reviews_tab(page: Any) -> bool:
 
 
 def _playwright_yotpo_click_next_page(page: Any) -> bool:
-    """일부 Yotpo 스킨: 페이지네이션."""
-    selectors = [
+    """
+    Yotpo 페이지네이션.
+
+    Lewkin 등 최신 스킨은 수평 숫자 페이지(1–5) + 화살표만 있고 `a.yotpo-next`가 없음.
+    `nav.yotpo-reviews-pagination-container` 안의 다음 링크만 사용(헤더 등 다른 Next 버튼과 구분).
+    """
+    scoped = [
+        "nav.yotpo-reviews-pagination-container a[aria-label='Navigate to next page']",
+        ".yotpo-reviews-pagination-container a[aria-label*='next page' i]",
+        ".yotpo-horizontal-pagination a[aria-label*='Navigate to next' i]",
+    ]
+    for sel in scoped:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() == 0:
+                continue
+            if loc.get_attribute("aria-disabled") == "true":
+                continue
+            try:
+                if "disabled" in (loc.get_attribute("class") or ""):
+                    continue
+            except Exception:
+                pass
+            if not loc.is_visible():
+                continue
+            loc.click(timeout=4000)
+            return True
+        except Exception:
+            continue
+
+    legacy = [
         "a.yotpo-next",
         ".yotpo-next-page",
         "[class*='yotpo-next']:not([class*='yotpo-next-'])",
-        "button[aria-label='Next']",
     ]
-    for sel in selectors:
+    for sel in legacy:
         try:
             loc = page.locator(sel).first
             if loc.count() > 0 and loc.is_visible():
@@ -767,7 +795,22 @@ def _playwright_yotpo_click_next_page(page: Any) -> bool:
                 return True
         except Exception:
             continue
-    return False
+
+    try:
+        clicked = page.evaluate(
+            """
+            () => {
+              const nav = document.querySelector('.yotpo-reviews-pagination-container, .yotpo-horizontal-pagination');
+              if (!nav) return false;
+              const next = nav.querySelector('a[aria-label="Navigate to next page"], a[aria-label*="next page" i]');
+              if (!next || next.getAttribute('aria-disabled') === 'true') return false;
+              try { next.click(); return true; } catch (e) { return false; }
+            }
+            """
+        )
+        return bool(clicked)
+    except Exception:
+        return False
 
 
 def _extract_yotpo_review_bodies(soup: BeautifulSoup) -> List[ReviewItem]:
