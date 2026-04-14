@@ -1118,6 +1118,37 @@ _AD_COPY_JSON_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+_AD_COPY_CTA_MAX_LEN_EN = 28
+
+_AD_COPY_JSON_SCHEMA_EN: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "copies": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "body": {
+                        "type": "string",
+                        "description": "Three sentences in English, each ending with a period.",
+                    },
+                    "cta": {
+                        "type": "string",
+                        "maxLength": _AD_COPY_CTA_MAX_LEN_EN,
+                        "description": f"Short action CTA, max {_AD_COPY_CTA_MAX_LEN_EN} chars including spaces, no trailing !",
+                    },
+                },
+                "required": ["body", "cta"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["copies"],
+    "additionalProperties": False,
+}
+
 
 def _ad_copy_strip_cta_trailing_bang(cta: str) -> str:
     """CTA 끝의 느낌표 제거(요청 시 표시 일관)."""
@@ -1504,7 +1535,34 @@ def generate_recommended_ad_copies(
     반환: (평문, 카드 UI용 블록 dict 목록 — title/body/cta).
     """
     review_and_usp_data = _build_review_and_usp_for_ad_copies(items, result)
-    prompt = f"""# Role
+    primary_en = _reviews_primarily_english(items)
+    ad_copy_schema: dict[str, Any] = _AD_COPY_JSON_SCHEMA_EN if primary_en else _AD_COPY_JSON_SCHEMA
+
+    if primary_en:
+        prompt = f"""# Role
+You are a senior performance copywriter. Combine the USP and review data into high-CTR ad copy.
+
+# Input Data
+{review_and_usp_data}
+
+# Task — exactly 4 objects in "copies" (fixed order; UI labels are added separately)
+# copies[0] → direct response, [1] → USP-led, [2] → pain/solution, [3] → benefit-led
+copies[0]: Direct response — break hesitation and drive immediate action.
+copies[1]: USP-led — lead with the clearest differentiator from reviews/USP.
+copies[2]: Pain/solution — emphasize before/after feel and relief.
+copies[3]: Benefit-led — tangible payoff and everyday win.
+
+Rules (each copy: 1 title row + 3 body lines + 1 CTA on screen):
+- **Tone:** Warm, conversational English. Not stiff corporate. No Korean-style endings.
+- **Body:** Exactly three sentences. Each ends with a period. Different focus per sentence. Ground in the reviews/USP; do not invent facts.
+- Do not put section labels like "direct response" inside body or CTA.
+- **cta:** Max {_AD_COPY_CTA_MAX_LEN_EN} characters including spaces. Short action phrase (e.g. Shop the glow, See shades, Get yours today). No trailing exclamation mark.
+- Output JSON only, matching the schema.
+
+Aim for ~60 characters per sentence; total body roughly within ~220 characters.
+"""
+    else:
+        prompt = f"""# Role
 너는 리뷰 기반 10년차 퍼포먼스 카피라이터다. USP와 리뷰 데이터를 결합해 매체 규격에 맞는 고효율(CTR 중심) 광고 카피를 생성한다.
 
 # Input Data
@@ -1544,7 +1602,7 @@ copies[3]: 혜택 강조 톤 — 제품 사용 후 얻게 될 실질적인 이�
                 prompt=prompt,
                 temperature=0.42,
                 max_output_tokens=max_out,
-                response_json_schema=_AD_COPY_JSON_SCHEMA,
+                response_json_schema=ad_copy_schema,
                 project_id=pid,
                 location=loc,
             )
@@ -1560,7 +1618,7 @@ copies[3]: 혜택 강조 톤 — 제품 사용 후 얻게 될 실질적인 이�
                     prompt=prompt,
                     temperature=0.42,
                     max_output_tokens=max_out,
-                    response_json_schema=_AD_COPY_JSON_SCHEMA,
+                    response_json_schema=ad_copy_schema,
                 )
             except Exception as e:
                 if _is_api_key_invalid_error(e):
@@ -1587,7 +1645,7 @@ copies[3]: 혜택 강조 톤 — 제품 사용 후 얻게 될 실질적인 이�
                 prompt=prompt_retry,
                 temperature=0.35,
                 max_output_tokens=max_out,
-                response_json_schema=_AD_COPY_JSON_SCHEMA,
+                response_json_schema=ad_copy_schema,
                 project_id=pid,
                 location=loc,
             )
@@ -1602,7 +1660,7 @@ copies[3]: 혜택 강조 톤 — 제품 사용 후 얻게 될 실질적인 이�
                         prompt=prompt_retry,
                         temperature=0.35,
                         max_output_tokens=max_out,
-                        response_json_schema=_AD_COPY_JSON_SCHEMA,
+                        response_json_schema=ad_copy_schema,
                     )
                     break
                 except Exception as e:
@@ -2012,6 +2070,16 @@ def _build_final_prompt(
 """
 
 
+def _reviews_primarily_english(items: list[ReviewItem]) -> bool:
+    """리뷰 샘플이 영어 중심이면 키워드·카피를 영어로 출력하기 위한 휴리스틱."""
+    blob = " ".join((it.text or "") for it in items[:45])
+    if len(blob.strip()) < 50:
+        return False
+    hangul = len(re.findall(r"[\uac00-\ud7a3]", blob))
+    latin = len(re.findall(r"[A-Za-z]", blob))
+    return latin >= 100 and latin > hangul * 3
+
+
 def analyze_reviews_with_gemini(
     api_keys: list[str],
     items: list[ReviewItem],
@@ -2038,6 +2106,7 @@ def analyze_reviews_with_gemini(
         )
 
     loc = (vertex_location or "us-central1").strip() or "us-central1"
+    primary_en = _reviews_primarily_english(items)
 
     def call_llm_json(
         *,
@@ -2117,6 +2186,33 @@ def analyze_reviews_with_gemini(
                 }
             ]
         }
+
+        if primary_en:
+            return f"""
+You are a performance marketing analyst and review classifier.
+Read each review and classify sentiment (positive/negative) and which Angles (marketing appeals) are mentioned.
+
+## Angle definitions (use ONLY these 8 ids in mentioned_angle_ids)
+{angles_block}
+
+## Sentiment
+- positive: clear satisfaction, recommendation, or repurchase intent
+- negative: clear dissatisfaction, flaws, weak effect, or hesitation
+
+## Angle rules
+- mentioned_angle_ids must contain only these English ids: efficacy, pain_avoidance, value_efficiency, convenience, social_proof, ingredients_tech, emotion_experience, settler
+- When the review touches product experience, include at least one angle when possible (empty array only if truly off-topic).
+- Multiple angles per review are allowed.
+
+## Input
+Product name: {product_name}
+
+Reviews (JSON array):
+{json.dumps(reviews_payload, ensure_ascii=False)}
+
+## Output (JSON only, no markdown)
+{json.dumps(schema_hint, ensure_ascii=False, indent=2)}
+""".strip()
 
         return f"""
 너는 한국어 퍼포먼스 마케팅 분석가이자 리뷰 분류기야.
@@ -2306,7 +2402,23 @@ Top 5 Angle:
         selected_texts.append(t)
         running += len(t)
 
-    keyword_prompt = f"""
+    if primary_en:
+        keyword_prompt = f"""
+You extract concise marketing keywords from customer reviews.
+
+Requirements:
+- Output exactly 10 items in top_keywords.
+- Each keyword: 1–3 words in **English** (e.g. "non-sticky shine", "daily lip").
+- Category-agnostic phrasing; merge synonyms and dedupe.
+- Exclude brand names, product proper nouns, and retailer names.
+- No medical claims or guaranteed outcomes.
+
+Output JSON only (no markdown).
+Review excerpts:
+{chr(10).join(selected_texts[:40])}
+""".strip()
+    else:
+        keyword_prompt = f"""
 너는 "리뷰 효용 키워드 추출기"야.
 아래 리뷰에서 소비자들이 반복해서 말하는 체감 효용/개선 포인트를 뽑아라.
 
