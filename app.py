@@ -3390,10 +3390,6 @@ def main() -> None:
                 st.caption(
                     "Kiwi(`kiwipiepy`)를 불러오지 못했습니다. `pip install kiwipiepy` 후 앱을 다시 실행하면 명사·용언 기준 워드맵이 적용됩니다."
                 )
-            elif WORDMAP_EXTRACT_MODE == "english":
-                st.caption(
-                    "영어 리뷰 기준 워드맵: 단어는 영어로 표시하며, be동사·관사·대명사·흔한 전치사 등 불용어는 제외했습니다."
-                )
             if not word_items:
                 st.caption("워드맵을 만들 키워드가 부족합니다.")
             else:
