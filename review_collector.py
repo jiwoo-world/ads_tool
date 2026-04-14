@@ -562,6 +562,148 @@ def _strip_yotpo_brand_footer(t: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def _yotpo_text_to_review_item(txt: str, *, seen: set[str]) -> ReviewItem | None:
+    txt = _strip_yotpo_brand_footer(re.sub(r"\s+", " ", (txt or "").strip()))
+    txt = re.sub(r"\s*Read more\s*$", "", txt, flags=re.IGNORECASE).strip()
+    if len(txt) < 12:
+        return None
+    if _text_looks_like_embedded_css(txt) or _text_is_yotpo_shopify_ui_noise(txt):
+        return None
+    key = txt[:240]
+    if key in seen:
+        return None
+    seen.add(key)
+    return ReviewItem(text=txt[:2000])
+
+
+def _playwright_yotpo_extract_review_items_from_dom(page: Any) -> List[ReviewItem]:
+    """
+    렌더된 DOM에서 Yotpo 카드 단위로 수집(BeautifulSoup보다 동적 노드에 유리).
+    제목(.yotpo-review-title) + 본문(.yotpo-review-body)을 한 리뷰로 합침.
+    """
+    try:
+        raw = page.evaluate(
+            """
+            () => {
+              const out = [];
+              const seen = new Set();
+              function pushText(t) {
+                t = (t || '').replace(/\\s+/g, ' ').trim();
+                if (t.length < 8 || seen.has(t)) return;
+                seen.add(t);
+                out.push(t);
+              }
+              document.querySelectorAll('.yotpo-review').forEach((card) => {
+                const titleEl = card.querySelector(
+                  '.yotpo-review-title, [class*="yotpo-review-title"], .content-title'
+                );
+                const bodyEl = card.querySelector(
+                  '.yotpo-review-body, .yotpo-read-more, [class*="yotpo-review-body"]'
+                );
+                const title = titleEl ? (titleEl.innerText || '').trim() : '';
+                const body = bodyEl ? (bodyEl.innerText || '').trim() : '';
+                const combined = [title, body].filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim();
+                if (combined.length >= 12) pushText(combined);
+              });
+              document.querySelectorAll('.yotpo-review-body').forEach((el) => {
+                pushText((el.innerText || '').trim());
+              });
+              return out.slice(0, 400);
+            }
+            """
+        )
+    except Exception:
+        return []
+    seen: set[str] = set()
+    items: List[ReviewItem] = []
+    for t in raw or []:
+        it = _yotpo_text_to_review_item(str(t), seen=seen)
+        if it is not None:
+            items.append(it)
+    return items
+
+
+def _playwright_scroll_page_to_bottom_staged(page: Any, *, steps: int = 10) -> None:
+    """상단 히어로만 로드된 상태에서 하단 REVIEW·Yotpo까지 지연 로드를 유도."""
+    try:
+        page.evaluate(
+            """
+            (n) => {
+              const h = document.body.scrollHeight || 0;
+              const step = Math.max(200, Math.floor(h / n));
+              for (let i = 1; i <= n; i++) {
+                window.scrollTo(0, Math.min(step * i, h));
+              }
+              window.scrollTo(0, h);
+            }
+            """,
+            steps,
+        )
+    except Exception:
+        pass
+    page.wait_for_timeout(600)
+
+
+def _playwright_click_shopify_reviews_tab(page: Any) -> bool:
+    """Lewkin 등: 하단 'Reviews' / 'REVIEW' 탭·앵커를 눌러 위젯을 활성화."""
+    selectors = [
+        'a[href*="#reviews"]',
+        'a[href*="tab-reviews"]',
+        'button[name="reviews"]',
+        '[data-tab*="review" i]',
+    ]
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() > 0 and loc.is_visible():
+                loc.click(timeout=5000)
+                return True
+        except Exception:
+            continue
+    try:
+        clicked = page.evaluate(
+            """
+            () => {
+              const cand = Array.from(
+                document.querySelectorAll('a, button, [role="tab"], [role="button"], span, div')
+              );
+              for (const el of cand) {
+                const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+                if (!t || t.length > 80) continue;
+                if (/^reviews?\\s*(\\(\\d+\\))?$/i.test(t)) {
+                  try { el.click(); return true; } catch (e) {}
+                }
+              }
+              const h = document.querySelector('a[href*="#reviews"]');
+              if (h) { try { h.click(); return true; } catch (e) {} }
+              return false;
+            }
+            """
+        )
+        return bool(clicked)
+    except Exception:
+        return False
+
+
+def _playwright_yotpo_click_next_page(page: Any) -> bool:
+    """일부 Yotpo 스킨: 페이지네이션."""
+    selectors = [
+        "a.yotpo-next",
+        ".yotpo-next-page",
+        "[class*='yotpo-next']:not([class*='yotpo-next-'])",
+        "button[aria-label='Next']",
+    ]
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() > 0 and loc.is_visible():
+                loc.click(timeout=3500)
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _extract_yotpo_review_bodies(soup: BeautifulSoup) -> List[ReviewItem]:
     """Yotpo(Shopify 등): 본문 노드만 수집. 위젯 전체 텍스트는 쓰지 않음."""
     selectors = [
@@ -1976,6 +2118,26 @@ def _is_yotpo_shopify_playwright_host(host: str) -> bool:
 
 
 def _playwright_scroll_yotpo_widget_into_view(page: Any) -> None:
+    try:
+        page.evaluate(
+            """
+            () => {
+              const ids = ['#reviews', '#judgeme_product_reviews', '[id*="review" i]', '#yotpo-main-widget'];
+              for (const s of ids) {
+                try {
+                  const el = document.querySelector(s);
+                  if (el) {
+                    el.scrollIntoView({ block: 'center', behavior: 'instant' });
+                    return;
+                  }
+                } catch (e) {}
+              }
+            }
+            """
+        )
+    except Exception:
+        pass
+    page.wait_for_timeout(400)
     for _ in range(4):
         try:
             loc = page.locator(
@@ -1983,17 +2145,17 @@ def _playwright_scroll_yotpo_widget_into_view(page: Any) -> None:
             ).first
             if loc.count() > 0:
                 loc.scroll_into_view_if_needed(timeout=8000)
-                page.wait_for_timeout(500)
+                page.wait_for_timeout(400)
                 return
         except Exception:
             pass
         try:
             page.evaluate(
-                "() => { window.scrollTo(0, Math.floor(document.body.scrollHeight * 0.55)); }"
+                "() => { window.scrollTo(0, Math.floor(document.body.scrollHeight * 0.88)); }"
             )
         except Exception:
             pass
-        page.wait_for_timeout(400)
+        page.wait_for_timeout(350)
 
 
 def _playwright_yotpo_click_load_more(page: Any) -> bool:
@@ -2053,11 +2215,14 @@ def _playwright_collect_yotpo_shopify(
     max_reviews: int,
 ) -> tuple[List[ReviewItem], str]:
     """
-    Shopify + Yotpo: 초기 DOM에는 리뷰 일부만 있고 Load more·스크롤로 추가 로드됨.
+    Shopify + Yotpo: 하단 Reviews 탭·스크롤 후 위젯이 뜨고, Load more/페이지로 추가 로드됨.
+    DOM evaluate로 제목+본문을 한 번에 잡아 수집량·속도를 맞춤.
     """
     all_items: List[ReviewItem] = []
     load_clicks = 0
-    max_rounds = min(140, max(50, max_pages * 14))
+    next_clicks = 0
+    # max_pages(슬라이더)에 비례하되 무한 대기 방지(이전 140라운드는 과도함)
+    max_rounds = min(55, max(16, max_pages * 6))
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -2078,20 +2243,28 @@ def _playwright_collect_yotpo_shopify(
             )
             page = context.new_page()
             _playwright_goto_relaxed(page, shopping_url, timeout_ms=120000)
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(900)
+            _playwright_scroll_page_to_bottom_staged(page, steps=12)
+            page.wait_for_timeout(500)
+            _playwright_click_shopify_reviews_tab(page)
+            page.wait_for_timeout(1100)
+            _playwright_scroll_yotpo_widget_into_view(page)
+            page.wait_for_timeout(700)
             try:
-                page.wait_for_selector("[class*='yotpo'], [id*='yotpo']", timeout=45000)
+                page.wait_for_selector("[class*='yotpo'], [id*='yotpo']", timeout=22000)
             except Exception:
                 pass
-            _playwright_scroll_yotpo_widget_into_view(page)
-            page.wait_for_timeout(1200)
+            _playwright_yotpo_scroll_reviews_panel(page)
+            page.wait_for_timeout(500)
 
             prev_count = 0
             no_growth = 0
             for _ in range(max_rounds):
+                dom_items = _playwright_yotpo_extract_review_items_from_dom(page)
                 html = page.content()
                 soup = BeautifulSoup(html, "html.parser")
-                batch = _extract_reviews_from_soup(soup, base_url=shopping_url) or []
+                soup_items = _extract_reviews_from_soup(soup, base_url=shopping_url) or []
+                batch = _dedupe_reviews(dom_items + soup_items)
                 all_items = _dedupe_reviews(all_items + batch)
                 if len(all_items) >= max_reviews:
                     all_items = all_items[:max_reviews]
@@ -2102,18 +2275,26 @@ def _playwright_collect_yotpo_shopify(
                 else:
                     no_growth = 0
                 prev_count = n
-                if no_growth >= 14:
+                stall_limit = 10 if n < 25 else 7
+                if no_growth >= stall_limit:
                     break
 
                 if _playwright_yotpo_click_load_more(page):
                     load_clicks += 1
-                    page.wait_for_timeout(1300)
+                    page.wait_for_timeout(900)
+                    continue
+                if _playwright_yotpo_click_next_page(page):
+                    next_clicks += 1
+                    page.wait_for_timeout(1000)
                     continue
                 _playwright_yotpo_scroll_reviews_panel(page)
-                page.wait_for_timeout(500)
+                page.wait_for_timeout(400)
                 if _playwright_yotpo_click_load_more(page):
                     load_clicks += 1
-                    page.wait_for_timeout(1200)
+                    page.wait_for_timeout(900)
+                elif _playwright_yotpo_click_next_page(page):
+                    next_clicks += 1
+                    page.wait_for_timeout(900)
         finally:
             try:
                 context.close()
@@ -2126,8 +2307,8 @@ def _playwright_collect_yotpo_shopify(
 
     all_items = _dedupe_reviews(all_items)[:max_reviews]
     note = (
-        f"Yotpo/Shopify Playwright: Load more {load_clicks}회, 총 {len(all_items)}건 "
-        f"(상한 {max_reviews}건)"
+        f"Yotpo/Shopify: 탭·스크롤 후 수집, Load more {load_clicks}회·다음페이지 {next_clicks}회, "
+        f"총 {len(all_items)}건 (상한 {max_reviews}건)"
     )
     return all_items, note
 
