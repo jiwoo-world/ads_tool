@@ -440,6 +440,248 @@ def _get_ef_da_token(kiwi: Any) -> Any:
     return _EF_DA_TOKEN
 
 
+_WORDMAP_EN_TOKEN_RE = re.compile(r"[A-Za-z]+(?:'[a-z]+)?")
+
+
+def _wordmap_english_stopwords() -> set[str]:
+    """
+    영어 워드맵용 불용어: be동사·조동사·관사·대부분 전치사/접속사·대명사 등
+    (내용어 명사·형용사·동사는 남김).
+    """
+    return {
+        # be
+        "am",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "aint",
+        # have / do (조동사)
+        "has",
+        "had",
+        "having",
+        "do",
+        "does",
+        "did",
+        "doing",
+        "done",
+        # 조동사
+        "will",
+        "would",
+        "shall",
+        "should",
+        "can",
+        "could",
+        "may",
+        "might",
+        "must",
+        "need",
+        # 관사
+        "a",
+        "an",
+        "the",
+        # 대명사·지시어
+        "i",
+        "you",
+        "he",
+        "she",
+        "it",
+        "we",
+        "they",
+        "me",
+        "him",
+        "her",
+        "us",
+        "them",
+        "my",
+        "your",
+        "his",
+        "its",
+        "our",
+        "their",
+        "mine",
+        "yours",
+        "hers",
+        "ours",
+        "theirs",
+        "this",
+        "that",
+        "these",
+        "those",
+        "who",
+        "whom",
+        "whose",
+        "which",
+        "what",
+        "whatever",
+        "whoever",
+        "where",
+        "when",
+        "why",
+        "how",
+        "there",
+        "here",
+        # 접속·절
+        "and",
+        "or",
+        "but",
+        "nor",
+        "if",
+        "because",
+        "although",
+        "though",
+        "while",
+        "unless",
+        "until",
+        "since",
+        "so",
+        "than",
+        "then",
+        "that",
+        # 부정·양태
+        "not",
+        "no",
+        "yes",
+        "very",
+        "just",
+        "only",
+        "also",
+        "too",
+        "really",
+        "quite",
+        "even",
+        "still",
+        "already",
+        "ever",
+        "never",
+        "always",
+        "often",
+        "sometimes",
+        "maybe",
+        "perhaps",
+        # 전치사(의미 없는 연결)
+        "at",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "of",
+        "off",
+        "on",
+        "onto",
+        "out",
+        "over",
+        "up",
+        "down",
+        "with",
+        "without",
+        "about",
+        "above",
+        "after",
+        "against",
+        "before",
+        "below",
+        "between",
+        "beyond",
+        "during",
+        "across",
+        "around",
+        "through",
+        "toward",
+        "towards",
+        "under",
+        "upon",
+        "via",
+        "within",
+        "as",
+        "to",
+        # 기타 기능어
+        "all",
+        "any",
+        "both",
+        "each",
+        "every",
+        "few",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "same",
+        "another",
+        "either",
+        "neither",
+        "own",
+        "noone",
+        "nobody",
+        "nothing",
+        "nowhere",
+        "anyone",
+        "anything",
+        "everyone",
+        "everything",
+        "somewhere",
+        "someone",
+        "something",
+        # 반복·쇼핑 UI에 자주 붙는 단어
+        "review",
+        "reviews",
+        "product",
+        "products",
+        "buyer",
+        "verified",
+        "read",
+        "more",
+        "less",
+        "show",
+        "sort",
+        "filter",
+        # 축약(아포스트로피 제거 후)
+        "dont",
+        "doesnt",
+        "didnt",
+        "wont",
+        "cant",
+        "couldnt",
+        "wouldnt",
+        "shouldnt",
+        "isnt",
+        "arent",
+        "wasnt",
+        "werent",
+        "havent",
+        "hasnt",
+        "hadnt",
+        "im",
+        "ive",
+        "ill",
+        "youre",
+        "youve",
+        "youll",
+        "theyre",
+        "weve",
+        "its",
+        "thats",
+        "whats",
+    }
+
+
+def _count_wordmap_english(text: str, stopwords: set[str], counter: Counter[str]) -> None:
+    """영어 리뷰: 단어 단위 빈도(소문자). Apostrophe는 제거해 dont 등과 매칭."""
+    raw = (text or "").strip()
+    if not raw:
+        return
+    for m in _WORDMAP_EN_TOKEN_RE.finditer(raw):
+        tok = m.group(0).lower().replace("'", "")
+        if len(tok) < 2 or tok.isdigit() or tok in stopwords:
+            continue
+        counter[tok] += 1
+
+
 def _wordmap_stopwords() -> set[str]:
     return {
         "그리고",
@@ -640,9 +882,8 @@ def _auto_select_wordmap_keywords(ranked: list[tuple[str, int]]) -> list[tuple[s
 def build_wordmap_keywords(items: list[ReviewItem]) -> list[tuple[str, int]]:
     """
     리뷰 원문에서 반복 등장 단어를 빈도 기반으로 추출합니다.
-    Kiwi로 일반·고유명사(NNG·NNP), 동사·형용사(VV·VA, lemma), NNG+XSV 합성(노력하다 등)을 집계하고,
-    보조 용언(VX)·의미 희박 lemma(같다·하다 등)는 제외합니다.
-    명사+이/가+나다/나오다(예: 거품이 나다)는 '거품 나다'처럼 묶어 집계하고, 동일 용언 단독 출현은 넣지 않습니다.
+    - 영어 리뷰가 주이면: 영어 단어만(소문자), be동사·관사·대명사 등 불용어 제외.
+    - 그 외: Kiwi로 명사·용언 등(한국어), 실패 시 정규식 폴백.
     표시 개수는 빈도 분포로 자동 결정합니다.
     """
     if not items:
@@ -650,19 +891,25 @@ def build_wordmap_keywords(items: list[ReviewItem]) -> list[tuple[str, int]]:
 
     global WORDMAP_EXTRACT_MODE
 
-    stopwords = _wordmap_stopwords()
     counter: Counter[str] = Counter()
 
-    try:
-        _get_kiwi()
-    except ImportError:
-        WORDMAP_EXTRACT_MODE = "regex"
+    if _reviews_primarily_english(items):
+        WORDMAP_EXTRACT_MODE = "english"
+        en_sw = _wordmap_english_stopwords()
         for it in items:
-            _count_tokens_regex(it.text or "", stopwords, counter)
+            _count_wordmap_english(it.text or "", en_sw, counter)
     else:
-        WORDMAP_EXTRACT_MODE = "kiwi"
-        for it in items:
-            _count_wordmap_kiwi(it.text or "", stopwords, counter)
+        stopwords = _wordmap_stopwords()
+        try:
+            _get_kiwi()
+        except ImportError:
+            WORDMAP_EXTRACT_MODE = "regex"
+            for it in items:
+                _count_tokens_regex(it.text or "", stopwords, counter)
+        else:
+            WORDMAP_EXTRACT_MODE = "kiwi"
+            for it in items:
+                _count_wordmap_kiwi(it.text or "", stopwords, counter)
 
     if not counter:
         return []
@@ -3139,9 +3386,13 @@ def main() -> None:
         with col1:
             st.subheader("주요 키워드 워드맵")
             word_items = build_wordmap_keywords(items)
-            if WORDMAP_EXTRACT_MODE != "kiwi":
+            if WORDMAP_EXTRACT_MODE == "regex":
                 st.caption(
                     "Kiwi(`kiwipiepy`)를 불러오지 못했습니다. `pip install kiwipiepy` 후 앱을 다시 실행하면 명사·용언 기준 워드맵이 적용됩니다."
+                )
+            elif WORDMAP_EXTRACT_MODE == "english":
+                st.caption(
+                    "영어 리뷰 기준 워드맵: 단어는 영어로 표시하며, be동사·관사·대명사·흔한 전치사 등 불용어는 제외했습니다."
                 )
             if not word_items:
                 st.caption("워드맵을 만들 키워드가 부족합니다.")
